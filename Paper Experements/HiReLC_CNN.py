@@ -144,7 +144,7 @@ class ExperimentConfig:
 
     quantization_type: str = 'mixed'
 
-    strategy: str = 'log'
+    strategy: str = None
 
     num_seeds: int = 3
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -378,34 +378,69 @@ class AdvancedQuantizer:
         return sign * (2.0 ** dq_log)
 
     @staticmethod
-    def quantize_per_channel(tensor: torch.Tensor, bits: int, symmetric: bool = True) -> torch.Tensor:
+    def quantize_per_channel(tensor, bits, symmetric=True):
         if bits >= 32: return tensor
         if tensor.dim() < 2:
             return AdvancedQuantizer.quantize_uniform(tensor, bits, symmetric)
         result = torch.zeros_like(tensor)
         qmax   = float(2 ** (bits - 1) - 1)
         for i in range(tensor.shape[0]):
-            ch = tensor[i].reshape(-1)
+            ch = tensor[i]
             if symmetric:
                 scale = (ch.abs().max() / qmax if qmax > 0
                          else torch.tensor(1.0, device=tensor.device)).clamp(min=1e-8)
-                result[i] = (torch.round(tensor[i] / scale).clamp(-qmax, qmax)) * scale
+                result[i] = torch.round(ch / scale).clamp(-qmax, qmax) * scale
             else:
                 mn, mx = ch.min(), ch.max()
                 scale = ((mx - mn) / (2 * qmax) if qmax > 0
                          else torch.tensor(1.0, device=tensor.device)).clamp(min=1e-8)
                 zp = -torch.round(mn / scale) - qmax
-                result[i] = (torch.round(tensor[i] / scale + zp).clamp(-qmax, qmax) - zp) * scale
+                result[i] = (torch.round(ch / scale + zp).clamp(-qmax, qmax) - zp) * scale
         return result
 
     @staticmethod
-    def quantize(tensor: torch.Tensor, bits: int, mode: str = 'uniform',
-                 quant_type: str = 'INT', **kwargs) -> torch.Tensor:
+    def quantize_learned(tensor, bits):
+        """Per-channel sign-magnitude quantization.
+
+        One explicit bit per output channel stores the sign; the remaining
+        (bits-1) bits uniformly quantize the absolute magnitude per channel.
+        This is operationally distinct from per-channel: zero-crossings are
+        represented exactly and magnitude resolution is one bit finer.
+        """
+        if bits >= 32: return tensor
+        mag_bits = max(1, bits - 1)          # reserve 1 bit for sign
+        qmax     = float(2 ** mag_bits - 1)
+        if tensor.dim() < 2:
+            # scalar/1-D: tensor-wise sign-magnitude
+            sign      = torch.where(tensor >= 0,
+                                    torch.ones_like(tensor),
+                                    -torch.ones_like(tensor))
+            magnitude = tensor.abs()
+            scale     = (magnitude.max() / qmax).clamp(min=1e-8)
+            q_mag     = torch.round(magnitude / scale).clamp(0, qmax)
+            return sign * q_mag * scale
+        result = torch.zeros_like(tensor)
+        for i in range(tensor.shape[0]):
+            ch        = tensor[i]
+            sign      = torch.where(ch >= 0,
+                                    torch.ones_like(ch),
+                                    -torch.ones_like(ch))
+            magnitude = ch.abs()
+            max_mag   = magnitude.max().clamp(min=1e-8)
+            scale     = (max_mag / qmax).clamp(min=1e-8)
+            q_mag     = torch.round(magnitude / scale).clamp(0, qmax)
+            result[i] = sign * q_mag * scale
+        return result
+
+    @staticmethod
+    def quantize(tensor, bits, mode='uniform', quant_type='INT', **kwargs):
         symmetric = (quant_type == 'INT')
-        if   mode == 'uniform':                  return AdvancedQuantizer.quantize_uniform(tensor, bits, symmetric)
-        elif mode == 'log':                      return AdvancedQuantizer.quantize_log(tensor, bits)
-        elif mode in ('per-channel', 'learned'): return AdvancedQuantizer.quantize_per_channel(tensor, bits, symmetric)
-        else:                                    return AdvancedQuantizer.quantize_uniform(tensor, bits, symmetric)
+        if   mode == 'uniform':     return AdvancedQuantizer.quantize_uniform(tensor, bits, symmetric)
+        elif mode == 'log':         return AdvancedQuantizer.quantize_log(tensor, bits)
+        elif mode == 'per-channel': return AdvancedQuantizer.quantize_per_channel(tensor, bits, symmetric)
+        elif mode == 'learned':     return AdvancedQuantizer.quantize_learned(tensor, bits)
+        else:                       return AdvancedQuantizer.quantize_uniform(tensor, bits, symmetric)
+
 
 class AdvancedPruner:
     @staticmethod
@@ -1589,7 +1624,7 @@ def main():
         use_surrogate=True, hla_budget_update_freq=1,
         compression_goal=compression_goal, experiment_name='hrl_cnn_configurable',
         quantization_type='mixed',   # 'mixed' | 'int' | 'float'
-        strategy='log',              # 'uniform' | 'log' | 'per-channel' | 'learned'
+        strategy=None,              # 'uniform' | 'log' | 'per-channel' | 'learned'
     )
 
     logger = ExperimentLogger(config.experiment_name, config.output_dir)
