@@ -494,9 +494,9 @@ If you use HiReLC in your research, please cite:
 
 MIT License - feel free to use for research and commercial purposes
 
-## Contributing
+## TODO
 
-Contributions welcome! Areas for contribution:
+Areas for enhacements:
 - Additional sensitivity estimation methods
 - New pruning strategies
 - RL algorithm implementations
