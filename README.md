@@ -484,9 +484,9 @@ See [TEST_README.md](TEST_README.md) for detailed test documentation.
 If you use HiReLC in your research, please cite:
 ```
 @framework{hirelc2024,
-  title={HiReLC: Hierarchical Reinforcement Learning for Model Compression},
-  author={Your Team},
-  year={2024}
+  title={Hierarchical Reinforcement Learning for Neuron Networks Compression (HiReLC): Pruning and Quantization},
+  author={},
+  year={2026}
 }
 ```
 
